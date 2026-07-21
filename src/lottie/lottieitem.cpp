@@ -69,11 +69,11 @@ static bool strokeProp(rlottie::Property prop)
     }
 }
 
-LOTCompItem::LOTCompItem(LOTModel *model)
+LOTCompItem::LOTCompItem(LOTModel *model, int depth, size_t &nodeBudget)
     : mUpdateViewBox(false), mCurFrameNo(-1)
 {
     mCompData = model->mRoot.get();
-    mRootLayer = createLayerItem(mCompData->mRootLayer.get());
+    mRootLayer = createLayerItem(mCompData->mRootLayer.get(), depth, nodeBudget);
     mRootLayer->setComplexContent(false);
     mViewSize = mCompData->size();
 }
@@ -100,12 +100,25 @@ void LOTCompItem::resetCurrentFrame()
     mCurFrameNo = -1;
 }
 
+static constexpr int    kMaxLayerDepth = 32;      // precomp nesting-depth limit
+static constexpr size_t kMaxLayerNodes = 100000;  // global render-node budget
+
 std::unique_ptr<LOTLayerItem> LOTCompItem::createLayerItem(
-    LOTLayerData *layerData)
+    LOTLayerData *layerData, int depth, size_t &nodeBudget)
 {
+    if (depth >= kMaxLayerDepth) {
+        vWarning << "Max precomp nesting depth (" << kMaxLayerDepth << ") exceeded";
+        return nullptr;
+    }
+    if (nodeBudget == 0) {
+        vWarning << "Max render node budget (" << kMaxLayerNodes << ") exceeded";
+        return nullptr;
+    }
+    --nodeBudget;
+
     switch (layerData->mLayerType) {
     case LayerType::Precomp: {
-        return std::make_unique<LOTCompLayerItem>(layerData);
+        return std::make_unique<LOTCompLayerItem>(layerData, depth + 1, nodeBudget);
     }
     case LayerType::Solid: {
         return std::make_unique<LOTSolidLayerItem>(layerData);
@@ -195,7 +208,7 @@ bool LOTCompItem::render(const rlottie::Surface &surface, bool clear)
     painter.setDrawRegion(
         VRect(surface.drawRegionPosX(), surface.drawRegionPosY(),
               surface.drawRegionWidth(), surface.drawRegionHeight()));
-    mRootLayer->render(&painter, {}, {});
+    mRootLayer->render(&painter, {}, {}, mSurfaceCache);
 
     return true;
 }
@@ -313,7 +326,7 @@ void LOTLayerItem::buildLayerNode()
 }
 
 void LOTLayerItem::render(VPainter *painter, const VRle &inheritMask,
-                          const VRle &matteRle)
+                          const VRle &matteRle, SurfaceCache &)
 {
     mDrawableList.clear();
     renderList(mDrawableList);
@@ -530,7 +543,7 @@ bool LOTLayerItem::visible() const
         return false;
 }
 
-LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
+LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel, int depth, size_t &nodeBudget)
     : LOTLayerItem(layerModel)
 {
     // 1. create layer item
@@ -539,7 +552,7 @@ LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
             continue;
         }
         LOTLayerData *layerModel = static_cast<LOTLayerData *>(i.get());
-        auto          layerItem = LOTCompItem::createLayerItem(layerModel);
+        auto          layerItem = LOTCompItem::createLayerItem(layerModel, depth, nodeBudget);
         if (layerItem) mLayers.push_back(std::move(layerItem));
     }
 
@@ -597,12 +610,12 @@ void LOTCompLayerItem::buildLayerNode()
 }
 
 void LOTCompLayerItem::render(VPainter *painter, const VRle &inheritMask,
-                              const VRle &matteRle)
+                              const VRle &matteRle, SurfaceCache &cache)
 {
     if (vIsZero(combinedAlpha())) return;
 
     if (vCompare(combinedAlpha(), 1.0)) {
-        renderHelper(painter, inheritMask, matteRle);
+        renderHelper(painter, inheritMask, matteRle, cache);
     } else {
         if (complexContent()) {
             VSize    size = painter->clipBoundingRect().size();
@@ -610,18 +623,29 @@ void LOTCompLayerItem::render(VPainter *painter, const VRle &inheritMask,
             VBitmap  srcBitmap(size.width(), size.height(),
                               VBitmap::Format::ARGB32);
             srcPainter.begin(&srcBitmap, true);
-            renderHelper(&srcPainter, inheritMask, matteRle);
+            renderHelper(&srcPainter, inheritMask, matteRle, cache);
             srcPainter.end();
             painter->drawBitmap(VPoint(), srcBitmap, combinedAlpha() * 255);
         } else {
-            renderHelper(painter, inheritMask, matteRle);
+            renderHelper(painter, inheritMask, matteRle, cache);
         }
     }
 }
 
 void LOTCompLayerItem::renderHelper(VPainter *painter, const VRle &inheritMask,
-                                    const VRle &matteRle)
+                                    const VRle &matteRle, SurfaceCache &cache)
 {
+    if (cache.mRenderDepth >= kMaxLayerDepth) {
+        vWarning << "Max precomp render depth (" << kMaxLayerDepth << ") exceeded";
+        return;
+    }
+    ++cache.mRenderDepth;
+    // Decrement on every exit path (including the early returns below).
+    struct DepthGuard {
+        SurfaceCache &c;
+        ~DepthGuard() { --c.mRenderDepth; }
+    } depthGuard{cache};
+
     VRle mask;
     if (mLayerMask) {
         mask = mLayerMask->maskRle(painter->clipBoundingRect());
@@ -649,9 +673,9 @@ void LOTCompLayerItem::renderHelper(VPainter *painter, const VRle &inheritMask,
                 if (matte) {
                     if (matte->visible())
                         renderMatteLayer(painter, mask, matteRle, matte,
-                                         layer.get());
+                                         layer.get(), cache);
                 } else {
-                    layer->render(painter, mask, matteRle);
+                    layer->render(painter, mask, matteRle, cache);
                 }
             }
             matte = nullptr;
@@ -661,7 +685,8 @@ void LOTCompLayerItem::renderHelper(VPainter *painter, const VRle &inheritMask,
 
 void LOTCompLayerItem::renderMatteLayer(VPainter *painter, const VRle &mask,
                                         const VRle &  matteRle,
-                                        LOTLayerItem *layer, LOTLayerItem *src)
+                                        LOTLayerItem *layer, LOTLayerItem *src,
+                                           SurfaceCache &   cache)
 {
     VSize size = painter->clipBoundingRect().size();
     // Decide if we can use fast matte.
@@ -670,7 +695,7 @@ void LOTCompLayerItem::renderMatteLayer(VPainter *painter, const VRle &mask,
     src->bitmap().reset(size.width(), size.height(),
                         VBitmap::Format::ARGB32);
     srcPainter.begin(&src->bitmap(), true);
-    src->render(&srcPainter, mask, matteRle);
+    src->render(&srcPainter, mask, matteRle, cache);
     srcPainter.end();
 
     // 2. draw layer to layer buffer
@@ -678,7 +703,7 @@ void LOTCompLayerItem::renderMatteLayer(VPainter *painter, const VRle &mask,
     layer->bitmap().reset(size.width(), size.height(),
                           VBitmap::Format::ARGB32);
     layerPainter.begin(&layer->bitmap(), true);
-    layer->render(&layerPainter, mask, matteRle);
+    layer->render(&layerPainter, mask, matteRle, cache);
 
     // 2.1update composition mode
     switch (layer->matteType()) {

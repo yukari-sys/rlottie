@@ -47,6 +47,11 @@ class LOTLayerItem;
 class LOTMaskItem;
 class VDrawable;
 
+class SurfaceCache {
+public:
+    int mRenderDepth{0};
+};
+
 class LOTDrawable : public VDrawable
 {
 public:
@@ -63,8 +68,8 @@ public:
 class LOTCompItem
 {
 public:
-   explicit LOTCompItem(LOTModel *model);
-   static std::unique_ptr<LOTLayerItem> createLayerItem(LOTLayerData *layerData);
+   explicit LOTCompItem(LOTModel *model, int depth, size_t &nodeBudget);
+   static std::unique_ptr<LOTLayerItem> createLayerItem(LOTLayerData *layerData, int depth, size_t &nodeBudget);
    bool update(int frameNo);
    void resize(const VSize &size);
    VSize size() const;
@@ -74,6 +79,7 @@ public:
    void setValue(const std::string &keypath, LOTVariant &value);
    void resetCurrentFrame();
 private:
+   SurfaceCache                        mSurfaceCache;
    VMatrix                                    mScaleMatrix;
    VSize                                      mViewSize;
    LOTCompositionData                         *mCompData;
@@ -115,7 +121,7 @@ public:
    virtual void update(int frameNo, const VMatrix &parentMatrix, float parentAlpha);
    VMatrix matrix(int frameNo) const;
    virtual void renderList(std::vector<VDrawable *> &){}
-   virtual void render(VPainter *painter, const VRle &mask, const VRle &matteRle);
+   virtual void render(VPainter *painter, const VRle &mask, const VRle &matteRle, SurfaceCache &cache);
    bool hasMatte() { if (mLayerData->mMatteType == MatteType::None) return false; return true; }
    MatteType matteType() const { return mLayerData->mMatteType;}
    bool visible() const;
@@ -150,17 +156,17 @@ protected:
 class LOTCompLayerItem: public LOTLayerItem
 {
 public:
-   explicit LOTCompLayerItem(LOTLayerData *layerData);
+   explicit LOTCompLayerItem(LOTLayerData *layerData, int depth, size_t &nodeBudget);
    void renderList(std::vector<VDrawable *> &list)final;
-   void render(VPainter *painter, const VRle &mask, const VRle &matteRle) final;
+   void render(VPainter *painter, const VRle &mask, const VRle &matteRle, SurfaceCache &cache) final;
    void buildLayerNode() final;
    bool resolveKeyPath(LOTKeyPath &keyPath, uint depth, LOTVariant &value) override;
 protected:
    void updateContent() final;
 private:
-    void renderHelper(VPainter *painter, const VRle &mask, const VRle &matteRle);
+    void renderHelper(VPainter *painter, const VRle &mask, const VRle &matteRle, SurfaceCache &cache);
     void renderMatteLayer(VPainter *painter, const VRle &inheritMask, const VRle &matteRle,
-                          LOTLayerItem *layer, LOTLayerItem *src);
+                          LOTLayerItem *layer, LOTLayerItem *src, SurfaceCache &cache);
 private:
    std::vector<LOTLayerNode *>                  mLayersCNode;
    std::vector<std::unique_ptr<LOTLayerItem>>   mLayers;

@@ -25,6 +25,9 @@
 
 using namespace rlottie;
 
+static constexpr int    kMaxLayerDepth = 32;      // precomp nesting-depth limit
+static constexpr size_t kMaxLayerNodes = 100000;  // global render-node budget
+
 struct RenderTask {
     RenderTask() { receiver = sender.get_future(); }
     std::promise<Surface> sender;
@@ -113,7 +116,8 @@ Surface AnimationImpl::render(size_t frameNo, const Surface &surface, bool clear
 void AnimationImpl::init(const std::shared_ptr<LOTModel> &model)
 {
     mModel = model;
-    mCompItem = std::make_unique<LOTCompItem>(mModel.get());
+    size_t nodeBudget = kMaxLayerNodes;
+    mCompItem = std::make_unique<LOTCompItem>(mModel.get(), 0, nodeBudget);
     mRenderInProgress = false;
 }
 
