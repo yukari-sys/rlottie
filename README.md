@@ -1,6 +1,6 @@
 # rlottie
 
-This repository is a fork of [rlottie](https://github.com/Samsung/rlottie) currently used in **Telegram X**.
+This repository is a fork of [rlottie](https://github.com/Samsung/rlottie) currently used in **Yukagram**.
 
 This fork **is not intended** to be used in any projects except **Telegram X**, as any app-specific changes might happen in the future.
 
